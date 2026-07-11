@@ -52,8 +52,8 @@ the GUI runs on Python's built-in Tkinter.
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/<your-username>/claude-usage-monitor.git
-cd claude-usage-monitor
+git clone https://github.com/Yuefan/claude-monitor.git
+cd claude-monitor
 
 # 2. (Optional) enable the system-tray feature
 pip install pystray pillow
