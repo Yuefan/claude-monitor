@@ -9,16 +9,21 @@ tokens you're burning, what it would cost at API prices, and how close you are t
 (English / 中文)**, plus a full-featured **CLI**. Zero required third-party dependencies —
 the GUI runs on Python's built-in Tkinter.
 
-> 💡 Your data never leaves your machine. The tool only reads local files under
-> `~/.claude/projects` — no network calls, no API key needed.
+> 💡 By default the tool only reads local files under `~/.claude/projects` — no
+> network calls, no API key needed. The optional **Live Account Quota** feature
+> (below) makes one call to Anthropic's own account API, reusing the login you
+> already have in Claude Code.
 
 ---
 
 ## Features
 
 - 📊 **Live dashboard** — auto-refreshes every 30 s, with a countdown to the next refresh
-- ⏱️ **5-hour rate-limit window tracking** — elapsed-time bar, burn rate (tokens/min), and a
-  **usage / remaining-balance progress bar** (green → yellow → red)
+- 🔐 **Real account quota, no separate login** — reuses your existing Claude Code
+  session to show your *actual* session (5h) and weekly (7d) usage % and exact reset
+  time, straight from Anthropic — not an estimate
+- ⏱️ **5-hour rate-limit window tracking** (local estimate) — elapsed-time bar, burn
+  rate (tokens/min), and a **usage / remaining-balance progress bar** (green → yellow → red)
 - 💰 **Cost estimation** at official API prices, including cache-write (1.25× / 2×) and
   cache-read (0.1×) rates — per day, per month, per model, per project
 - 🔔 **System tray** — closing the window minimizes to tray; hover the icon to see today's cost
@@ -87,6 +92,11 @@ python claude_monitor.py live      # live terminal dashboard (Ctrl+C to quit)
 │ [████████░░░░░░░░░░░░]  (usage)          │                        │
 │ used $9.46 (38%)    remaining $15.23     │                        │
 ├──────────────────────────────────────────┴────────────────────────┤
+│ Account Quota (Live)                          synced 18:42:03     │
+│  Session (5h)  [████░░░░░░░░░░░░░░░]  used 12%   resets in 4h 4m  │
+│  Weekly (7d)   [████████████████░░░]  used 79%   resets in 35h44m │
+│  Source: Anthropic's account API (unofficial) · reuses your login │
+├──────────────────────────────────────────────────────────────────┤
 │ [ Daily ] [ Models ] [ Projects ] [ 5h Blocks ] [ Monthly ]       │
 │  ... sortable tables with a TOTAL row ...                         │
 ├───────────────────────────────────────────────────────────────────┤
@@ -95,18 +105,56 @@ python claude_monitor.py live      # live terminal dashboard (Ctrl+C to quit)
 ```
 
 - **Time bar** — how far into the current 5-hour rate-limit window you are.
-- **Usage bar** — estimated cost used vs. your window limit; the label shows the
-  **remaining balance**. Colors: green < 60 %, yellow < 85 %, red ≥ 85 %.
+- **Usage bar** — *locally estimated* cost used vs. your window limit; the label
+  shows the **remaining balance**. Colors: green < 60 %, yellow < 85 %, red ≥ 85 %.
+- **Account Quota (Live)** — your *real* session (5h) and weekly (7d) usage
+  percentage and exact reset time, fetched directly from Anthropic. See
+  [Live Account Quota](#live-account-quota) below.
 - **Tabs** — daily / per-model / per-project / 5-hour-block / monthly breakdowns.
 - **Status bar** — last & next refresh time (live countdown), language toggle, manual refresh.
 - **Close button** minimizes to the system tray (if `pystray` is installed); right-click the
   tray icon to quit. On Windows 11 new tray icons start in the `^` overflow area — drag the
   orange starburst onto the taskbar to pin it.
 
+## Live Account Quota
+
+The local "usage / limit" bar is an *estimate* built from your transcript history,
+because Anthropic doesn't publish exact subscription quotas anywhere in your local
+files. The **Account Quota (Live)** card instead calls Anthropic's own account API and
+shows the real numbers — your current session (5h) and weekly (7d) usage percentage
+and the exact reset timestamp, straight from the source.
+
+**No separate login required.** When you run `/login` in Claude Code (or use it with a
+`claude.ai` Pro/Max account), Claude Code stores an OAuth token locally so it can power
+its own `/usage` command. This tool simply reuses that same, already-authenticated
+token — nothing new to type in, nothing sent anywhere except to Anthropic's own API
+using the same credentials Claude Code already has.
+
+```bash
+python claude_monitor.py account     # CLI: prints the same live quota
+```
+
+**Requirements & caveats:**
+
+- You must have signed in to Claude Code with a `claude.ai` account (`/login`), not
+  only an `ANTHROPIC_API_KEY`. API-key-only setups don't have a subscription quota to
+  query this way — the card will show "not signed in" and the local estimate still works.
+- This endpoint is **not part of Anthropic's public/documented API**. It's the same
+  internal call Claude Code's own `/usage` command makes, discovered by the community.
+  It could change or stop working without notice — the tool always falls back to the
+  local estimate if it does.
+- If your token has expired, run any command in Claude Code (it refreshes
+  automatically), then hit **Refresh** here.
+- If Claude Code stores its credentials in a non-default location, or you'd rather not
+  rely on file auto-detection, open **Settings → Account** and paste an access token
+  manually (e.g. from `ant auth print-credentials --access-token` if you use the
+  Anthropic CLI). It's stored in plain text in your local `config.json`, same trust
+  level as Claude Code's own credentials file.
+
 ## Configuration
 
-> **Do I need an API key?** No. The tool reads Claude Code's local transcript files —
-> there is nothing to authenticate and no data ever leaves your machine.
+> **Do I need an API key?** No. Local stats need nothing at all. The optional Live
+> Account Quota feature reuses your existing Claude Code login — see above.
 
 Click the **Settings** button in the status bar to configure everything from the GUI:
 
@@ -123,7 +171,8 @@ You can also edit it by hand — all fields optional:
 {
   "lang": "en",
   "block_limit_usd": 35,
-  "data_dir": "D:/somewhere/.claude"
+  "data_dir": "D:/somewhere/.claude",
+  "oauth_token": "sk-ant-oat01-..."
 }
 ```
 
@@ -132,6 +181,7 @@ You can also edit it by hand — all fields optional:
 | `lang` | `"en"` | UI language: `"en"` or `"zh"`. Also set by the in-app toggle button. |
 | `block_limit_usd` | auto | Your 5-hour window budget in USD. Anthropic doesn't publish exact subscription limits, so by default the tool estimates it from your **highest historical window usage**. Set it manually if you know your plan's practical ceiling. |
 | `data_dir` | auto | Custom Claude data directory (either the `.claude` folder or its `projects` subfolder). |
+| `oauth_token` | auto-detect | Manual override for the [Live Account Quota](#live-account-quota) feature. Leave unset to auto-detect Claude Code's own credentials file. |
 
 ## CLI Reference
 
@@ -148,6 +198,7 @@ python claude_monitor.py [command] [options]
 | `projects` | Per-project breakdown | |
 | `blocks` | 5-hour rate-limit windows | `--limit N` (default 10) |
 | `live` | Auto-refreshing terminal dashboard | `--interval N` seconds (default 10) |
+| `account` | Real session/weekly quota from Anthropic ([details](#live-account-quota)) | |
 
 ## How It Works
 
@@ -204,7 +255,9 @@ doesn't publish per-plan quotas.
 ## 中文说明
 
 跨平台的 Claude Code 用量监控工具：实时显示 token 消耗、等价 API 成本、5 小时限额窗口的
-用量与**余额**进度条。Claude 官方风格界面，支持系统托盘和中英文一键切换。
+用量与**余额**进度条，以及**复用 Claude Code 登录状态直接查询 Anthropic 官方账号接口**得到的
+真实配额百分比与精确重置时间（无需单独登录，见下方"实时账号配额"）。Claude 官方风格界面，
+支持系统托盘和中英文一键切换。
 
 **快速开始：**
 
@@ -212,9 +265,17 @@ doesn't publish per-plan quotas.
 - 源码运行：`pip install pystray pillow`（托盘，可选）→ `python claude_monitor_gui.py`
 - 命令行：`python claude_monitor.py live`
 
-**配置**：点击状态栏的 **设置** 按钮即可配置数据目录和 5 小时限额（也可手动编辑脚本/exe
-同目录的 `config.json`：`lang` 界面语言、`block_limit_usd` 窗口限额、`data_dir` 自定义
-数据目录）。**本工具不需要 API Key**——数据来自本机 Claude Code 的记录文件。
+**实时账号配额**：界面里的"本窗口用量/限额"是根据本地历史估算的，因为 Anthropic 不公开
+订阅的确切额度。而"账号实时配额"卡片直接调用 Anthropic 官方账号接口，显示真实的会话
+（5 小时）和每周（7 天）用量百分比及精确重置时间。**不需要单独登录**——只要你在 Claude
+Code 里执行过 `/login`，本工具会自动复用它已经保存的登录凭据（`~/.claude/.credentials.json`）
+去查询，不发送到除 Anthropic 官方接口以外的任何地方。注意：此接口是 Claude Code 内部
+`/usage` 命令使用的非公开接口，并非官方文档 API，可能会变更；查询失败时会自动回退显示本地
+估算。命令行版：`python claude_monitor.py account`。
+
+**配置**：点击状态栏的 **设置** 按钮即可配置数据目录、5 小时限额和账号访问令牌（也可手动
+编辑脚本/exe 同目录的 `config.json`：`lang` 界面语言、`block_limit_usd` 窗口限额、`data_dir`
+自定义数据目录、`oauth_token` 手动指定访问令牌）。本地统计部分**不需要 API Key**。
 
 **说明：** 数据全部来自本机 `~/.claude/projects`，不联网、不需要 API key。订阅用户不按
 token 付费，显示的美元是"等价 API 价值"，用于衡量用量强度和离限额的距离。

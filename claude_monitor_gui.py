@@ -46,7 +46,7 @@ L = {
         "no_block":      "当前没有活跃窗口（最近无消息）",
         "blk_stats":     "tokens {t}    成本 {c}    消息 {n}",
         "blk_burn":      "in {i}  out {o}  缓存写 {w}  缓存读 {r}    燃烧 {b} tok/min",
-        "usage_label":   "本窗口用量 / 限额（{src} {lim}）",
+        "usage_label":   "本窗口用量 / 限额（{src} {lim}，本地估算）",
         "src_auto":      "自动估算",
         "src_custom":    "自定义",
         "usage_text":    "已用 {u}（{p:.0f}%）    余额 {r}",
@@ -105,6 +105,27 @@ L = {
         "btn_save":      "保存",
         "btn_cancel":    "取消",
         "set_invalid_limit": "限额必须是数字，例如 35",
+        "quota_title":    "账号实时配额",
+        "quota_session":  "会话（5 小时）",
+        "quota_weekly":   "每周（7 天）",
+        "quota_weekly_opus":   "每周 · Opus",
+        "quota_weekly_sonnet": "每周 · Sonnet",
+        "quota_used":     "已用 {p:.0f}%",
+        "quota_reset_in": "{h} 小时 {m} 分钟后重置（{t}）",
+        "quota_source":   "数据来自 Anthropic 账号接口（非公开 API，可能变更）· 复用 Claude Code 登录状态",
+        "quota_syncing":  "同步中...",
+        "quota_synced":   "已同步 {t}",
+        "quota_not_logged_in": "未检测到 Claude Code 登录。请先在 Claude Code 中运行 /login，或到设置中手动填写访问令牌。",
+        "quota_unauthorized":  "登录凭据已过期。请在 Claude Code 中执行任意命令使其自动刷新，然后重试。",
+        "quota_err_generic":   "获取实时配额失败（{e}），本地估算仍可用",
+        "usage_local_note": "本地估算",
+        "set_account":        "账号（可选）",
+        "set_account_detected":     "已检测到 Claude Code 登录：{p}",
+        "set_account_not_detected": "未检测到 Claude Code 登录凭据",
+        "set_account_hint": ("此功能复用你在 Claude Code 中已登录的账号会话，无需在此单独登录。\n"
+                             "如凭据文件不在默认位置，可在下方手动粘贴访问令牌（高级用法，\n"
+                             "明文保存于本地 config.json，不会发送到除 Anthropic 官方接口以外的任何地方）。"),
+        "set_token":       "访问令牌（可选，高级）",
     },
     "en": {
         "block_title":   "Current 5-hour Window",
@@ -112,7 +133,7 @@ L = {
         "no_block":      "No active window (no recent messages)",
         "blk_stats":     "tokens {t}    cost {c}    msgs {n}",
         "blk_burn":      "in {i}  out {o}  cacheW {w}  cacheR {r}    burn {b} tok/min",
-        "usage_label":   "Window usage / limit ({src} {lim})",
+        "usage_label":   "Window usage / limit ({src} {lim}, local estimate)",
         "src_auto":      "auto-estimated",
         "src_custom":    "custom",
         "usage_text":    "used {u} ({p:.0f}%)    remaining {r}",
@@ -171,6 +192,28 @@ L = {
         "btn_save":      "Save",
         "btn_cancel":    "Cancel",
         "set_invalid_limit": "Limit must be a number, e.g. 35",
+        "quota_title":    "Account Quota (Live)",
+        "quota_session":  "Session (5h)",
+        "quota_weekly":   "Weekly (7d)",
+        "quota_weekly_opus":   "Weekly · Opus",
+        "quota_weekly_sonnet": "Weekly · Sonnet",
+        "quota_used":     "used {p:.0f}%",
+        "quota_reset_in": "resets in {h}h {m}m ({t})",
+        "quota_source":   "Source: Anthropic's account API (unofficial, may change) · reuses your Claude Code login",
+        "quota_syncing":  "Syncing...",
+        "quota_synced":   "Synced {t}",
+        "quota_not_logged_in": "Not signed in via Claude Code. Run /login in Claude Code first, or paste an access token in Settings.",
+        "quota_unauthorized":  "Login credentials expired. Run any command in Claude Code to refresh them, then retry.",
+        "quota_err_generic":   "Couldn't fetch live quota ({e}) — local estimate below still works",
+        "usage_local_note": "local estimate",
+        "set_account":        "Account (optional)",
+        "set_account_detected":     "Detected Claude Code login: {p}",
+        "set_account_not_detected": "No Claude Code login detected",
+        "set_account_hint": ("This reuses the account session you're already logged into in Claude\n"
+                             "Code — no separate login needed here. If the credentials file isn't in\n"
+                             "the default location, you can paste an access token below (advanced;\n"
+                             "stored in plain text in local config.json, sent only to Anthropic's API)."),
+        "set_token":       "Access token (optional, advanced)",
     },
 }
 
@@ -192,6 +235,14 @@ SELECT   = "#EBDDD3"
 FONT_SERIF = ("Georgia", 12, "bold")     # Claude-style serif headings
 FONT_UI    = ("Segoe UI", 9)
 FONT_MONO  = ("Consolas", 10)
+
+QUOTA_ORDER = ["five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet"]
+QUOTA_LABEL_KEY = {
+    "five_hour": "quota_session",
+    "seven_day": "quota_weekly",
+    "seven_day_opus": "quota_weekly_opus",
+    "seven_day_sonnet": "quota_weekly_sonnet",
+}
 
 
 def local(ts):
@@ -255,6 +306,7 @@ class MonitorGUI:
         self.tray = None
         self.today_cost_text = "$0.00"
         self.entries_cache = None
+        self.quota_cache = None  # last {"data": {...}} or {"error": "code"}
         self.next_refresh_at = None
         self._refresh_timer = None
         if TRAY_AVAILABLE:
@@ -331,9 +383,33 @@ class MonitorGUI:
                  font=("Segoe UI", 8), anchor="w").grid(
             row=6, column=0, columnspan=3, sticky="w", pady=(2, 14))
 
+        # account / live quota
+        ttk.Separator(win, orient="horizontal").grid(
+            row=7, column=0, columnspan=3, sticky="we", pady=(0, 10))
+        tk.Label(win, text=tr("set_account"), bg=BG, fg=FG,
+                 font=("Segoe UI", 9, "bold"), anchor="w").grid(
+            row=8, column=0, sticky="w")
+        creds = claude_monitor.read_account_credentials()
+        detected = (tr("set_account_detected").format(p=creds["source"])
+                   if creds else tr("set_account_not_detected"))
+        tk.Label(win, text=detected, bg=BG, fg=(GREEN if creds else FG_DIM),
+                 font=("Segoe UI", 8), anchor="w").grid(
+            row=9, column=0, columnspan=3, sticky="w", pady=(2, 6))
+        tk.Label(win, text=tr("set_account_hint"), bg=BG, fg=FG_DIM,
+                 font=("Segoe UI", 8), justify="left", anchor="w").grid(
+            row=10, column=0, columnspan=3, sticky="w", pady=(0, 8))
+        tk.Label(win, text=tr("set_token"), bg=BG, fg=FG,
+                 font=("Segoe UI", 9, "bold"), anchor="w").grid(
+            row=11, column=0, sticky="w")
+        token_var = tk.StringVar(value=self.config.get("oauth_token", ""))
+        tk.Entry(win, textvariable=token_var, width=52, bg=BG_FIELD, fg=FG,
+                 relief="flat", font=FONT_UI, show="*", highlightthickness=1,
+                 highlightbackground=BORDER).grid(
+            row=12, column=0, columnspan=2, sticky="we", ipady=3, pady=(2, 14))
+
         err = tk.Label(win, text="", bg=BG, fg=RED, font=("Segoe UI", 8),
                        anchor="w")
-        err.grid(row=7, column=0, columnspan=3, sticky="w")
+        err.grid(row=13, column=0, columnspan=3, sticky="w")
 
         def save():
             raw = lim_var.get().strip()
@@ -351,13 +427,18 @@ class MonitorGUI:
                 self.config["data_dir"] = d
             else:
                 self.config.pop("data_dir", None)
+            tok = token_var.get().strip()
+            if tok:
+                self.config["oauth_token"] = tok
+            else:
+                self.config.pop("oauth_token", None)
             self._save_config()
             self._apply_data_dir()
             win.destroy()
             self.refresh()
 
         btns = tk.Frame(win, bg=BG)
-        btns.grid(row=8, column=0, columnspan=3, sticky="e", pady=(8, 0))
+        btns.grid(row=14, column=0, columnspan=3, sticky="e", pady=(8, 0))
         tk.Button(btns, text=tr("btn_cancel"), command=win.destroy, bg=BG_CARD,
                   fg=FG, relief="flat", padx=14, pady=3, font=FONT_UI,
                   cursor="hand2", highlightbackground=BORDER,
@@ -375,6 +456,7 @@ class MonitorGUI:
         self._apply_language()
         if self.entries_cache is not None:
             self._render(self.entries_cache)  # redraw dynamic texts
+        self._render_quota(self.quota_cache)
 
     def _apply_language(self):
         tr = self.tr
@@ -384,6 +466,8 @@ class MonitorGUI:
         self.btn_settings.config(text=tr("btn_settings"))
         note = tr("note") + (tr("note_tray") if TRAY_AVAILABLE else "")
         self.note.config(text=note)
+        self.quota_title.config(text=tr("quota_title"))
+        self.quota_note.config(text=tr("quota_source"))
         for i, key in enumerate(self.tab_keys):
             self.nb.tab(i, text=tr(key))
         for tree, keys in self.trees:
@@ -464,6 +548,9 @@ class MonitorGUI:
                     background=ACCENT, borderwidth=0, thickness=14)
         s.configure("Usage.Horizontal.TProgressbar", troughcolor=TROUGH,
                     background=GREEN, borderwidth=0, thickness=14)
+        for i in range(4):
+            s.configure(f"Quota{i}.Horizontal.TProgressbar", troughcolor=TROUGH,
+                        background=GREEN, borderwidth=0, thickness=12)
 
     # --------------------------------------------------------------- header
     def _card(self, parent):
@@ -523,6 +610,34 @@ class MonitorGUI:
         self.today_models = tk.Label(today, text="", bg=BG_CARD, fg=FG_DIM,
                                      font=("Consolas", 9), anchor="w")
         self.today_models.pack(fill="x")
+
+        # -- live account quota card (full width, row 1)
+        outer, quota = self._card(top)
+        outer.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(10, 0))
+        top.rowconfigure(1, weight=0)
+        head = tk.Frame(quota, bg=BG_CARD)
+        head.pack(fill="x")
+        self.quota_title = tk.Label(head, text=tr("quota_title"), bg=BG_CARD, fg=FG,
+                                    font=FONT_SERIF, anchor="w")
+        self.quota_title.pack(side="left")
+        self.quota_sync = tk.Label(head, text="", bg=BG_CARD, fg=FG_DIM,
+                                   font=("Segoe UI", 8), anchor="e")
+        self.quota_sync.pack(side="right")
+
+        self.quota_body = tk.Frame(quota, bg=BG_CARD)
+        self.quota_body.pack(fill="x", pady=(4, 0))
+        self.quota_msg = tk.Label(self.quota_body, text=tr("quota_syncing"),
+                                  bg=BG_CARD, fg=FG_DIM,
+                                  font=FONT_UI, anchor="w", justify="left",
+                                  wraplength=900)
+        self.quota_msg.pack(fill="x")
+        self.quota_rows_frame = tk.Frame(self.quota_body, bg=BG_CARD)
+        self.quota_rows_frame.pack(fill="x")
+        self.quota_widgets = {}  # window key -> (label, bar, text)
+
+        self.quota_note = tk.Label(quota, text=tr("quota_source"), bg=BG_CARD,
+                                   fg=FG_DIM, font=("Segoe UI", 8), anchor="w")
+        self.quota_note.pack(fill="x", pady=(6, 0))
 
     # ----------------------------------------------------------------- tabs
     def _make_tree(self, parent, keys, widths, anchors):
@@ -641,6 +756,8 @@ class MonitorGUI:
         self.loading = True
         self.status.config(text=self.tr("loading_data"))
         threading.Thread(target=self._load, daemon=True).start()
+        self.quota_sync.config(text=self.tr("quota_syncing"))
+        threading.Thread(target=self._load_quota, daemon=True).start()
 
     def _load(self):
         try:
@@ -649,6 +766,24 @@ class MonitorGUI:
             self.root.after(0, self._on_error, str(exc))
             return
         self.root.after(0, self._on_loaded, entries)
+
+    def _load_quota(self):
+        """Runs in a background thread — independent of local file parsing,
+        so a slow/unreachable network never blocks the local dashboard."""
+        manual = self.config.get("oauth_token") or None
+        creds = claude_monitor.read_account_credentials(manual)
+        try:
+            data = claude_monitor.fetch_live_quota(creds)
+            result = {"data": data}
+        except claude_monitor.QuotaError as e:
+            result = {"error": str(e)}
+        self.root.after(0, self._on_quota_result, result)
+
+    def _on_quota_result(self, result):
+        self.quota_cache = result
+        self.quota_sync.config(
+            text=self.tr("quota_synced").format(t=datetime.now().strftime("%H:%M:%S")))
+        self._render_quota(result)
 
     def _on_error(self, msg):
         self.loading = False
@@ -664,6 +799,62 @@ class MonitorGUI:
                 t=datetime.now().strftime("%H:%M:%S"), n=len(entries)),
             fg=FG_DIM)
         self._schedule_refresh()
+
+    # --------------------------------------------------------- live quota
+    def _render_quota(self, result):
+        tr = self.tr
+        for w in self.quota_rows_frame.winfo_children():
+            w.destroy()
+
+        if result is None:
+            self.quota_msg.config(text=tr("quota_syncing"), fg=FG_DIM)
+            self.quota_msg.pack(fill="x")
+            self.quota_rows_frame.pack_forget()
+            return
+
+        if "error" in result:
+            code = result["error"]
+            if code == "not_logged_in":
+                msg = tr("quota_not_logged_in")
+            elif code == "unauthorized":
+                msg = tr("quota_unauthorized")
+            else:
+                msg = tr("quota_err_generic").format(e=code)
+            self.quota_msg.config(text=msg, fg=FG_DIM)
+            self.quota_msg.pack(fill="x")
+            self.quota_rows_frame.pack_forget()
+            return
+
+        self.quota_msg.pack_forget()
+        self.quota_rows_frame.pack(fill="x")
+        data = result["data"]
+        now = datetime.now(timezone.utc)
+        style = ttk.Style(self.root)
+        idx = 0
+        for key in QUOTA_ORDER:
+            w = data.get(key)
+            if not w or w.get("pct") is None:
+                continue
+            row = tk.Frame(self.quota_rows_frame, bg=BG_CARD)
+            row.pack(fill="x", pady=3)
+            tk.Label(row, text=tr(QUOTA_LABEL_KEY[key]), bg=BG_CARD, fg=FG,
+                     font=FONT_UI, width=16, anchor="w").pack(side="left")
+            bar = ttk.Progressbar(row, style=f"Quota{idx}.Horizontal.TProgressbar",
+                                  maximum=100, length=220)
+            bar["value"] = min(100, w["pct"])
+            bar.pack(side="left", padx=(4, 10))
+            color = GREEN if w["pct"] < 60 else (YELLOW if w["pct"] < 85 else RED)
+            style.configure(f"Quota{idx}.Horizontal.TProgressbar", background=color)
+            reset_txt = ""
+            if w.get("reset"):
+                secs = max(0, (w["reset"] - now).total_seconds())
+                h, m = int(secs // 3600), int((secs % 3600) // 60)
+                reset_txt = "    " + tr("quota_reset_in").format(
+                    h=h, m=m, t=local(w["reset"]).strftime("%m-%d %H:%M"))
+            tk.Label(row, text=tr("quota_used").format(p=w["pct"]) + reset_txt,
+                     bg=BG_CARD, fg=(color if w["pct"] >= 85 else FG),
+                     font=FONT_MONO, anchor="w").pack(side="left")
+            idx = (idx + 1) % 4
 
     # --------------------------------------------------------------- render
     def _render(self, entries):

@@ -27,6 +27,8 @@ import json
 import os
 import sys
 import time
+import urllib.error
+import urllib.request
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -185,6 +187,118 @@ class Agg:
     @property
     def total(self):
         return self.input + self.output + self.cache_w + self.cache_r
+
+
+# ------------------------------------------------------- live account quota ---
+# Claude Code (after `/login` with a claude.ai account) stores an OAuth token
+# locally and uses it to query Anthropic's own account-usage endpoint for the
+# `/usage` command. We reuse that already-established login — no separate auth
+# flow needed. This endpoint is NOT part of the public API and is undocumented;
+# it may change or disappear without notice. Falls back gracefully everywhere.
+
+QUOTA_ENDPOINT = "https://api.anthropic.com/api/oauth/usage"
+
+
+class QuotaError(Exception):
+    """Raised when live account quota can't be fetched. str(exc) is a short
+    machine-readable reason code: not_logged_in, unauthorized, network,
+    timeout, http_<code>, bad_response, empty_response."""
+
+
+def credentials_path():
+    """Locate Claude Code's local OAuth credentials file, if any."""
+    candidates = []
+    for d in EXTRA_DATA_DIRS:
+        p = Path(d)
+        base = p.parent if p.name == "projects" else p
+        candidates.append(base / ".credentials.json")
+    env = os.environ.get("CLAUDE_CONFIG_DIR")
+    if env:
+        candidates.append(Path(env) / ".credentials.json")
+    candidates.append(Path.home() / ".claude" / ".credentials.json")
+    candidates.append(Path.home() / ".config" / "claude" / ".credentials.json")
+    for c in candidates:
+        if c.is_file():
+            return c
+    return None
+
+
+def read_account_credentials(manual_token=None):
+    """Return a dict with accessToken/subscriptionType/etc, or None.
+    `manual_token` (from Settings) short-circuits file lookup entirely."""
+    if manual_token:
+        return {"accessToken": manual_token, "source": "manual"}
+    path = credentials_path()
+    if not path:
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    oauth = data.get("claudeAiOauth") or {}
+    if not oauth.get("accessToken"):
+        return None
+    oauth = dict(oauth)
+    oauth["source"] = str(path)
+    return oauth
+
+
+def fetch_live_quota(credentials, timeout=8):
+    """Query Anthropic's account usage endpoint. Returns a dict keyed by
+    window name ("five_hour", "seven_day", "seven_day_opus", ...), each value
+    {"pct": float 0-100, "reset": aware datetime or None, "severity": str|None}.
+    Only non-null windows returned by the API are included.
+    Raises QuotaError on any failure."""
+    if not credentials or not credentials.get("accessToken"):
+        raise QuotaError("not_logged_in")
+
+    req = urllib.request.Request(
+        QUOTA_ENDPOINT,
+        headers={
+            "Authorization": f"Bearer {credentials['accessToken']}",
+            "anthropic-beta": "oauth-2025-04-20",
+            "User-Agent": "claude-usage-monitor",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read()
+    except urllib.error.HTTPError as e:
+        raise QuotaError("unauthorized" if e.code == 401 else f"http_{e.code}")
+    except TimeoutError:
+        raise QuotaError("timeout")
+    except urllib.error.URLError:
+        raise QuotaError("network")
+
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        raise QuotaError("bad_response")
+
+    def norm(block):
+        if not isinstance(block, dict):
+            return None
+        try:
+            pct = float(block.get("utilization"))
+        except (TypeError, ValueError):
+            return None
+        reset_dt = None
+        raw_reset = block.get("resets_at")
+        if raw_reset:
+            try:
+                reset_dt = datetime.fromisoformat(raw_reset.replace("Z", "+00:00"))
+            except ValueError:
+                reset_dt = None
+        return {"pct": pct, "reset": reset_dt, "severity": block.get("severity")}
+
+    result = {}
+    for key in ("five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet"):
+        n = norm(data.get(key))
+        if n:
+            result[key] = n
+    if not result:
+        raise QuotaError("empty_response")
+    return result
 
 
 def blocks_of(entries, hours=5):
@@ -414,6 +528,45 @@ def cmd_live(interval):
         print()
 
 
+def cmd_account():
+    creds = read_account_credentials()
+    if not creds:
+        print(yellow("Not logged in via Claude Code."))
+        print(dim("Run `claude` and `/login` (or `ant auth login`) first, then retry."))
+        return
+    try:
+        quota = fetch_live_quota(creds)
+    except QuotaError as e:
+        print(red(f"Failed to fetch live quota: {e}"))
+        if str(e) == "unauthorized":
+            print(dim("Credentials may have expired — run any command in Claude Code to refresh."))
+        return
+    plan = creds.get("subscriptionType", "?")
+    print(bold(f"\nAccount quota  ") + dim(f"(plan: {plan}, source: {creds.get('source', '?')})\n"))
+    labels = {
+        "five_hour": "Session (5h)",
+        "seven_day": "Weekly (7d)",
+        "seven_day_opus": "Weekly - Opus",
+        "seven_day_sonnet": "Weekly - Sonnet",
+    }
+    now = datetime.now(timezone.utc)
+    rows = []
+    for key, label in labels.items():
+        w = quota.get(key)
+        if not w:
+            continue
+        pct = w["pct"]
+        reset = w["reset"]
+        remain = ""
+        if reset:
+            secs = max(0, (reset - now).total_seconds())
+            h, m = int(secs // 3600), int((secs % 3600) // 60)
+            remain = f"resets in {h}h {m}m ({local(reset).strftime('%m-%d %H:%M')})"
+        color = green if pct < 60 else (yellow if pct < 85 else red)
+        rows.append([label, color(f"{pct:.0f}%"), remain])
+    print(table(["Window", "Used", "Reset"], rows, aligns=["<", ">", "<"]))
+
+
 def cmd_summary(entries):
     now = datetime.now(timezone.utc)
     print(render_live(entries))
@@ -428,7 +581,8 @@ def cmd_summary(entries):
 def main():
     ap = argparse.ArgumentParser(description="Claude Code usage monitor")
     ap.add_argument("command", nargs="?", default="summary",
-                    choices=["summary", "daily", "monthly", "models", "projects", "blocks", "live"])
+                    choices=["summary", "daily", "monthly", "models", "projects",
+                             "blocks", "live", "account"])
     ap.add_argument("--days", type=int, default=14, help="days for daily report")
     ap.add_argument("--limit", type=int, default=10, help="number of blocks to show")
     ap.add_argument("--interval", type=int, default=10, help="live refresh seconds")
@@ -440,6 +594,9 @@ def main():
 
     if args.command == "live":
         cmd_live(args.interval)
+        return
+    if args.command == "account":
+        cmd_account()
         return
 
     entries = load_entries()
